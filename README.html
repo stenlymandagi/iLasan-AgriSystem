@@ -1,0 +1,999 @@
+# iLasan Agri System
+## Farm Management Information System (FMIS) Berbasis Google Apps Script
+
+**Versi fondasi:** 0.1  
+**Platform:** Google Apps Script + Google Sheets  
+**Nama aplikasi:** **iLasan Agri System**
+
+---
+
+## 1. Gambaran Umum
+
+**iLasan Agri System** adalah aplikasi manajemen usahatani berbasis Google Apps Script yang dirancang untuk membantu pencatatan, pengelolaan, pemantauan, evaluasi, analisa, dan pelaporan kegiatan budidaya pertanian secara terintegrasi.
+
+Aplikasi ini tidak dirancang sebagai perangkat lunak akuntansi murni. Fokus utamanya adalah menghubungkan tiga kelompok informasi yang secara nyata dibutuhkan dalam usaha tani:
+
+1. **Data dan aktivitas budidaya**
+2. **Data keuangan dan arus kas**
+3. **Data produksi, panen, pemasaran, dan ketertelusuran produk**
+
+Arsitektur iLasan Agri System sengaja dibuat fleksibel agar mampu menangani kondisi usaha tani yang sebenarnya, termasuk:
+
+- satu petani memiliki beberapa lahan;
+- satu lahan terdiri atas beberapa blok;
+- satu blok dapat ditanami lebih dari satu jenis tanaman;
+- sistem tumpangsari;
+- satu pembelian/input digunakan untuk beberapa tanaman dan/atau beberapa blok;
+- satu tenaga kerja dapat mengerjakan beberapa jenis pekerjaan;
+- biaya sulit dan tidak praktis dialokasikan ke masing-masing komoditas;
+- pengeluaran dan penerimaan perlu dievaluasi berdasarkan periode;
+- hasil panen harus dapat ditelusuri kembali sampai blok/lahan dan aktivitas budidayanya;
+- alat dan mesin pertanian perlu diperlakukan sebagai aset dan dapat dihitung penyusutannya.
+
+---
+
+# 2. Prinsip Arsitektur yang Telah Dikunci
+
+Seluruh pengembangan berikutnya harus mempertahankan prinsip-prinsip berikut.
+
+### 2.1 Petani bukan satu-satunya unit pengelolaan
+
+Satu petani dapat memiliki beberapa lahan.
+
+**Struktur:**
+
+`PETANI → LAHAN → BLOK`
+
+Lahan merupakan unit spasial yang relatif tetap, sedangkan blok merupakan unit operasional budidaya.
+
+---
+
+### 2.2 Blok adalah unit spasial operasional
+
+Satu lahan dapat dibagi menjadi beberapa blok dan masing-masing blok dapat dikelola secara berbeda.
+
+Contoh:
+
+- Lahan 5.000 m²
+- Blok A = 1.000 m²
+- Blok B = 1.500 m²
+- Blok C = 2.500 m²
+
+Blok menjadi salah satu identitas penting dalam pencatatan budidaya dan ketertelusuran hasil.
+
+---
+
+### 2.3 Satu blok dapat memiliki beberapa tanaman
+
+Aplikasi tidak boleh menggunakan asumsi:
+
+> satu blok = satu komoditas.
+
+Satu blok dapat menggunakan sistem:
+
+- monokultur;
+- tumpangsari;
+- beberapa jenis tanaman pada periode yang sama.
+
+Karena itu dibentuk konsep **Unit Budidaya**.
+
+### Unit Budidaya
+
+Unit Budidaya merupakan kombinasi:
+
+`BLOK + SIKLUS BUDIDAYA + TANAMAN`
+
+Contoh:
+
+- UB-001 = Blok A + MT-2026-01 + Cabai
+- UB-002 = Blok A + MT-2026-01 + Jagung
+- UB-003 = Blok A + MT-2026-01 + Bawang Daun
+
+Unit Budidaya menjadi penghubung utama untuk aktivitas teknis, produksi, dan traceability.
+
+---
+
+# 3. Arsitektur Konseptual Utama
+
+Secara konseptual, iLasan Agri System dibangun dalam empat dimensi utama.
+
+## Dimensi 1 — Spasial
+
+Menjawab:
+
+> **Di mana kegiatan berlangsung?**
+
+```text
+PETANI
+   │
+   ├── LAHAN 1
+   │     ├── BLOK A
+   │     ├── BLOK B
+   │     └── BLOK C
+   │
+   └── LAHAN 2
+         ├── BLOK A
+         └── BLOK B
+```
+
+---
+
+## Dimensi 2 — Budidaya
+
+Menjawab:
+
+> **Apa yang dibudidayakan dan apa yang dilakukan?**
+
+```text
+BLOK
+  │
+  └── SIKLUS BUDIDAYA
+        │
+        └── UNIT BUDIDAYA
+              │
+              └── AKTIVITAS BUDIDAYA
+```
+
+Aktivitas dapat meliputi:
+
+1. Pengolahan lahan
+2. Pemilihan benih
+3. Penyemaian
+4. Penanaman
+5. Pemupukan
+6. Pengendalian hama dan penyakit
+7. Pemeliharaan
+8. Panen
+9. Pascapanen
+10. Pemasaran
+
+---
+
+## Dimensi 3 — Keuangan
+
+Menjawab:
+
+> **Berapa uang yang keluar dan masuk?**
+
+```text
+TRANSAKSI KEUANGAN
+       │
+       ├── KAS MASUK
+       │
+       └── KAS KELUAR
+              │
+              ├── Jenis Belanja
+              └── Item
+```
+
+Keuangan dianalisis berdasarkan **periode waktu**, bukan berdasarkan alokasi biaya ke masing-masing komoditas.
+
+---
+
+## Dimensi 4 — Produk / Traceability
+
+Menjawab:
+
+> **Produk ini berasal dari mana dan dijual ke mana?**
+
+```text
+UNIT BUDIDAYA
+      │
+     PANEN
+      │
+  BATCH PANEN
+      │
+   PRODUK
+      │
+  PENJUALAN
+```
+
+Setiap batch panen harus dapat ditelusuri kembali ke:
+
+`PRODUK → BATCH PANEN → UNIT BUDIDAYA → SIKLUS → BLOK → LAHAN → PETANI`
+
+dan kemudian ke aktivitas budidaya yang terkait dengan siklus tersebut.
+
+---
+
+# 4. Alur Utama Aplikasi
+
+Alur konseptual utama yang telah disepakati:
+
+```text
+Dashboard
+   ↓
+Data Lahan
+   ↓
+SOP Budidaya
+   ↓
+Aktivitas Budidaya
+   ├── Pengolahan Lahan
+   ├── Pemilihan Benih
+   ├── Penyemaian
+   ├── Pemupukan
+   ├── Pengendalian Hama & Penyakit
+   ├── Panen
+   ├── Pascapanen
+   └── Pemasaran
+   ↓
+Catatan Biaya & Arus Kas
+   ↓
+Catatan Panen & Pascapanen
+   ↓
+Analisa Usaha Tani
+   ↓
+Laporan
+```
+
+Pada implementasi teknis, menu **Alat & Mesin Pertanian** menjadi modul pendukung lintas proses.
+
+---
+
+# 5. Prinsip Penting: Tidak Ada Alokasi Biaya ke Komoditas
+
+Ini merupakan salah satu keputusan desain terpenting.
+
+Biaya **tidak diwajibkan** untuk dialokasikan kepada masing-masing komoditas, tanaman, blok, atau aktivitas.
+
+Alasannya adalah kondisi nyata di lapangan.
+
+Contoh:
+
+Satu botol/merek/jenis pestisida dapat dicampur dalam satu tangki sprayer dan digunakan beberapa kali untuk:
+
+- beberapa tanaman;
+- beberapa blok;
+- beberapa kegiatan;
+- pada waktu yang berdekatan.
+
+Demikian pula tenaga kerja dapat melakukan beberapa pekerjaan sekaligus dalam satu hari.
+
+Memaksa pengguna membagi biaya ke masing-masing komoditas berpotensi menghasilkan angka yang terlihat presisi, tetapi sebenarnya hanya perkiraan.
+
+Karena itu:
+
+> **Aktivitas budidaya dicatat secara rinci, sedangkan transaksi keuangan dicatat berdasarkan transaksi aktual dan periode waktu.**
+
+Dengan demikian:
+
+**Aktivitas = apa yang dilakukan**
+
+**Keuangan = berapa uang yang masuk/keluar**
+
+Keduanya saling melengkapi tanpa harus memaksakan alokasi nominal.
+
+---
+
+# 6. Pendekatan Keuangan Berbasis Periode
+
+Sistem harus mampu menghitung dan mengevaluasi keuangan pada setiap saat berdasarkan rentang waktu tertentu.
+
+Periode yang didukung secara konseptual:
+
+- tanggal–tanggal tertentu;
+- mingguan;
+- bulanan;
+- triwulanan;
+- semester;
+- tahunan;
+- periode khusus/custom;
+- periode siklus budidaya apabila dibutuhkan untuk analisa operasional.
+
+Contoh:
+
+> 1 Agustus 2026 – 31 Agustus 2026
+
+Sistem dapat menghitung:
+
+- total kas masuk;
+- total kas keluar;
+- saldo bersih;
+- biaya per jenis belanja;
+- biaya per item;
+- penerimaan per komoditas;
+- transaksi individual;
+- rincian transaksi berdasarkan tanggal.
+
+---
+
+# 7. Struktur Biaya
+
+Biaya menggunakan hierarki:
+
+`JENIS BELANJA → ITEM → TRANSAKSI`
+
+Contoh:
+
+### Jenis Belanja
+**Pestisida**
+
+### Item
+**Insektisida X**
+
+### Transaksi
+15/08/2026, 2 botol, Rp750.000
+
+Kategori belanja dapat mencakup:
+
+- Benih
+- Pupuk
+- Pestisida
+- Tenaga Kerja
+- BBM
+- Transportasi
+- Pemeliharaan
+- Pembelian alat/mesin
+- Kemasan
+- Sewa
+- Air/listrik
+- Biaya lain-lain
+
+Sistem harus dapat menjawab:
+
+> Berapa total belanja pupuk?
+
+> Berapa total belanja NPK Mutiara?
+
+> Berapa total biaya tenaga kerja?
+
+> Berapa total pengeluaran pada bulan Agustus?
+
+> Berapa total pengeluaran sepanjang tahun 2026?
+
+---
+
+# 8. Penerimaan Dicatat Per Komoditas
+
+Berbeda dengan biaya, penerimaan harus tetap mempunyai identitas komoditas.
+
+Contoh:
+
+| Komoditas | Volume | Harga | Penerimaan |
+|---|---:|---:|---:|
+| Cabai | 500 kg | Rp40.000 | Rp20.000.000 |
+| Tomat | 800 kg | Rp10.000 | Rp8.000.000 |
+| Bawang daun | 300 kg | Rp15.000 | Rp4.500.000 |
+
+Sistem dapat mengevaluasi:
+
+- volume produksi per komoditas;
+- volume penjualan;
+- harga jual;
+- penerimaan per komoditas;
+- penerimaan per periode;
+- total penerimaan usaha tani.
+
+---
+
+# 9. Laba/Rugi
+
+Standar awal aplikasi menggunakan **pendekatan periodik/cash basis**, dengan penyusutan aset sebagai biaya non-kas periodik.
+
+## Formula dasar
+
+**Laba/Rugi Periode**
+
+`Total Penerimaan Periode - Total Biaya Periode`
+
+Contoh:
+
+`Rp16.000.000 - Rp11.750.000 = Rp4.250.000`
+
+Pada tahap awal, aplikasi **tidak menghitung laba/rugi bersih per komoditas**, karena biaya tidak dialokasikan ke masing-masing komoditas.
+
+Yang dihitung adalah:
+
+### Laba/Rugi Usahatani Per Periode
+
+Sedangkan per komoditas disajikan sebagai:
+
+### Kinerja Penerimaan Komoditas
+
+Hal ini lebih jujur secara metodologis dan sesuai dengan praktik pencatatan lapangan.
+
+---
+
+# 10. Arus Kas
+
+Sistem harus mampu membedakan:
+
+## Kas Masuk
+
+Contohnya:
+
+- penjualan hasil panen;
+- penjualan produk pascapanen;
+- pendapatan lain.
+
+## Kas Keluar
+
+Contohnya:
+
+- pembelian benih;
+- pupuk;
+- pestisida;
+- tenaga kerja;
+- BBM;
+- transportasi;
+- pemeliharaan;
+- pembelian alat/mesin;
+- biaya lainnya.
+
+Rumus:
+
+`Saldo Periode = Kas Masuk - Kas Keluar`
+
+Dashboard harus dapat menampilkan posisi kas sesuai rentang tanggal yang dipilih.
+
+---
+
+# 11. Alat dan Mesin Pertanian sebagai Aset
+
+Aplikasi memiliki modul khusus:
+
+> **Alat & Mesin Pertanian**
+
+Setiap aset minimal memiliki:
+
+- ID aset;
+- kode aset;
+- nama alat/mesin;
+- kategori;
+- merek;
+- tipe/model;
+- nomor seri;
+- tanggal perolehan;
+- sumber perolehan;
+- harga perolehan;
+- kondisi awal (baru/bekas);
+- nilai residu;
+- umur ekonomis;
+- status aset;
+- lokasi;
+- catatan.
+
+---
+
+# 12. Penyusutan Aset
+
+Pada tahap awal digunakan:
+
+> **Metode garis lurus**
+
+Rumus:
+
+`Penyusutan Tahunan = (Harga Perolehan - Nilai Residu) / Umur Ekonomis`
+
+Penyusutan dapat dihitung secara:
+
+- bulanan;
+- semesteran;
+- tahunan.
+
+Penyusutan tidak dialokasikan ke komoditas.
+
+Penyusutan masuk sebagai:
+
+> **Biaya periode**
+
+Contoh:
+
+Harga alat = Rp18.000.000  
+Nilai residu = Rp3.000.000  
+Umur ekonomis = 5 tahun
+
+Penyusutan tahunan:
+
+`Rp3.000.000`
+
+Penyusutan bulanan:
+
+`Rp250.000`
+
+---
+
+# 13. Traceability / Ketertelusuran Produk
+
+Salah satu fitur strategis iLasan Agri System adalah kemampuan menelusuri asal produk.
+
+Setiap panen menghasilkan **ID Batch Panen**.
+
+Contoh:
+
+`PAN-20260820-001`
+
+Batch tersebut memiliki hubungan ke:
+
+- tanggal panen;
+- komoditas;
+- varietas;
+- unit budidaya;
+- siklus budidaya;
+- blok;
+- lahan;
+- petani;
+- berat total;
+- grade;
+- produk afkir;
+- lokasi penyimpanan.
+
+---
+
+## Backward Traceability
+
+Dari produk yang sudah dipanen, sistem dapat menjawab:
+
+> Produk ini berasal dari blok mana?
+
+> Dari lahan siapa?
+
+> Dari siklus budidaya kapan?
+
+> Tanaman/varietas apa?
+
+> Aktivitas budidaya apa saja yang dilakukan?
+
+Secara konseptual:
+
+`PRODUK → BATCH → PANEN → UNIT → SIKLUS → BLOK → LAHAN → PETANI`
+
+---
+
+## Forward Traceability
+
+Sebaliknya, sistem dapat menjawab:
+
+> Hasil dari blok tertentu dijual ke mana?
+
+> Berapa volumenya?
+
+> Kapan dijual?
+
+> Kepada siapa?
+
+Hubungannya:
+
+`BATCH → PENJUALAN → PEMBELI`
+
+Kemampuan ini akan sangat berguna untuk penelusuran mutu dan keamanan pangan.
+
+---
+
+# 14. SOP Budidaya
+
+SOP tidak hanya menjadi dokumen informasi.
+
+SOP dirancang sebagai **template aktivitas budidaya**.
+
+Contoh SOP Cabai:
+
+1. Pengolahan lahan
+2. Persiapan/pemilihan benih
+3. Penyemaian
+4. Penanaman
+5. Pemupukan
+6. Pengendalian OPT
+7. Pemeliharaan
+8. Panen
+9. Pascapanen
+10. Pemasaran
+
+SOP dapat memiliki:
+
+- urutan;
+- tahapan;
+- aktivitas;
+- hari ke/HST;
+- toleransi hari;
+- catatan.
+
+Ke depan SOP dapat digunakan untuk membentuk **rencana aktivitas** secara otomatis.
+
+---
+
+# 15. Aktivitas Budidaya
+
+Aktivitas dicatat pada level siklus/unit budidaya.
+
+Minimal:
+
+- ID aktivitas;
+- ID siklus;
+- ID unit;
+- tanggal;
+- tahapan;
+- aktivitas;
+- input;
+- dosis;
+- volume;
+- satuan;
+- OPT sasaran;
+- status;
+- catatan.
+
+Contoh:
+
+> 15 Agustus 2026  
+> Tahap: Pengendalian OPT  
+> Aktivitas: Penyemprotan  
+> Input: Insektisida X  
+> Dosis: 2 ml/L  
+> Sasaran: Thrips  
+> Status: Selesai
+
+Tidak diperlukan nominal biaya yang dipaksakan pada aktivitas tersebut.
+
+---
+
+# 16. Panen dan Pascapanen
+
+Panen dicatat dalam bentuk **batch**.
+
+Data panen dapat mencakup:
+
+- ID batch;
+- tanggal panen;
+- ID siklus;
+- ID unit;
+- komoditas;
+- varietas;
+- blok;
+- berat total;
+- grade A;
+- grade B;
+- afkir;
+- lokasi penyimpanan;
+- status;
+- catatan.
+
+Pascapanen dipisahkan agar dapat mencatat:
+
+- sortasi;
+- grading;
+- pembersihan;
+- pengemasan;
+- penyimpanan;
+- susut;
+- berat setelah proses.
+
+---
+
+# 17. Pemasaran
+
+Pemasaran/penjualan memiliki hubungan ke batch panen.
+
+Data minimal:
+
+- ID penjualan;
+- ID batch;
+- tanggal;
+- pembeli;
+- komoditas;
+- volume;
+- satuan;
+- harga satuan;
+- total;
+- catatan.
+
+Dengan demikian penerimaan tetap dapat dianalisis per komoditas, sementara asal barang tetap dapat ditelusuri.
+
+---
+
+# 18. Arsitektur Database
+
+Struktur konseptual utama:
+
+```text
+PETANI
+   │
+   └── LAHAN
+        │
+        └── BLOK
+             │
+             └── SIKLUS BUDIDAYA
+                  │
+                  └── UNIT BUDIDAYA
+                       │
+                       └── AKTIVITAS
+```
+
+Rantai produksi:
+
+```text
+UNIT BUDIDAYA
+      │
+      ↓
+    PANEN
+      │
+      ↓
+ BATCH PANEN
+      │
+      ├── PASCAPANEN
+      │
+      └── PENJUALAN
+```
+
+Rantai keuangan:
+
+```text
+TRANSAKSI KEUANGAN
+      │
+      ├── KAS MASUK
+      │
+      └── KAS KELUAR
+             │
+       JENIS BELANJA
+             │
+            ITEM
+             │
+           PERIODE
+```
+
+Rantai aset:
+
+```text
+ASET
+ │
+ ├── PEROLEHAN
+ ├── PEMELIHARAAN
+ └── PENYUSUTAN
+```
+
+---
+
+# 19. Struktur Sheet Database
+
+Fondasi versi 0.1 menyediakan sheet:
+
+1. `PETANI`
+2. `LAHAN`
+3. `BLOK`
+4. `KOMODITAS`
+5. `VARIETAS`
+6. `SIKLUS`
+7. `UNIT_BUDIDAYA`
+8. `SOP`
+9. `SOP_DETAIL`
+10. `AKTIVITAS`
+11. `KEUANGAN`
+12. `PANEN`
+13. `PASCAPANEN`
+14. `PEMASARAN`
+15. `ASET`
+16. `PENYUSUTAN`
+
+---
+
+# 20. Struktur Aplikasi/Modul
+
+Menu utama iLasan Agri System:
+
+1. Dashboard
+2. Data Lahan
+3. SOP Budidaya
+4. Aktivitas Budidaya
+5. Catatan Biaya & Arus Kas
+6. Panen & Pascapanen
+7. Alat & Mesin
+8. Analisa Usaha Tani
+9. Laporan
+
+Master Data digunakan sebagai fondasi hubungan antar-modul.
+
+---
+
+# 21. Dashboard
+
+Dashboard harus berkembang menjadi pusat monitoring.
+
+Indikator utama:
+
+- jumlah petani;
+- jumlah lahan;
+- jumlah blok;
+- jumlah siklus;
+- jumlah aktivitas;
+- jumlah batch panen;
+- kas masuk;
+- kas keluar;
+- saldo;
+- jumlah aset.
+
+Pada tahap berikutnya dashboard dapat ditambah:
+
+- status aktivitas;
+- aktivitas terlambat;
+- produksi;
+- penerimaan;
+- tren biaya;
+- tren arus kas;
+- komoditas dominan;
+- indikator usaha tani.
+
+---
+
+# 22. Arsitektur Teknis Apps Script
+
+Kode dirancang modular.
+
+Struktur file:
+
+```text
+Code.gs
+Config.gs
+
+Index.html
+Styles.html
+AppJS.html
+```
+
+Pada tahap pengembangan berikutnya, modul API dapat dipecah menjadi:
+
+```text
+DashboardAPI.gs
+PetaniAPI.gs
+LahanAPI.gs
+BlokAPI.gs
+KomoditasAPI.gs
+SiklusAPI.gs
+SOPAPI.gs
+AktivitasAPI.gs
+KeuanganAPI.gs
+PanenAPI.gs
+PascapanenAPI.gs
+PemasaranAPI.gs
+AsetAPI.gs
+AnalisaAPI.gs
+LaporanAPI.gs
+```
+
+Prinsip penting:
+
+> Konfigurasi nama sheet dipusatkan pada `Config.gs`.
+
+Dengan demikian tidak dibuat deklarasi `SHEET_xxx` berulang pada banyak file. Ini dimaksudkan untuk mencegah konflik seperti:
+
+`Identifier 'SHEET_xxx' has already been declared`
+
+yang pernah terjadi pada pengembangan aplikasi sebelumnya.
+
+---
+
+# 23. Tahapan Pengembangan
+
+### Tahap 1 — Fondasi
+- struktur database;
+- konfigurasi;
+- routing halaman;
+- dashboard awal;
+- koneksi Google Sheets.
+
+### Tahap 2 — Master Data
+- Petani;
+- Lahan;
+- Blok;
+- Komoditas;
+- Varietas.
+
+### Tahap 3 — Siklus & Unit Budidaya
+- pembuatan siklus;
+- tanaman dalam satu blok;
+- dukungan tumpangsari.
+
+### Tahap 4 — SOP
+- master SOP;
+- detail tahapan;
+- template aktivitas.
+
+### Tahap 5 — Aktivitas Budidaya
+- pencatatan aktivitas;
+- status;
+- histori;
+- dokumentasi.
+
+### Tahap 6 — Keuangan
+- transaksi kas masuk;
+- transaksi kas keluar;
+- jenis belanja;
+- item;
+- analisa periode.
+
+### Tahap 7 — Panen, Pascapanen & Pemasaran
+- batch panen;
+- traceability;
+- sortasi/grading;
+- penjualan.
+
+### Tahap 8 — Aset
+- alat/mesin;
+- perolehan;
+- pemeliharaan;
+- penyusutan.
+
+### Tahap 9 — Analisa Usaha Tani
+- arus kas;
+- biaya;
+- penerimaan;
+- laba/rugi;
+- analisa periodik.
+
+### Tahap 10 — Laporan
+- laporan budidaya;
+- laporan keuangan;
+- laporan produksi;
+- laporan traceability;
+- export/print/PDF.
+
+---
+
+# 24. Prinsip Pengembangan
+
+Pengembangan iLasan Agri System harus mempertahankan prinsip:
+
+> **Sederhana bagi pengguna lapangan, tetapi kuat pada struktur data.**
+
+Input harus seminimal mungkin, sedangkan hubungan data dibangun oleh sistem.
+
+Aplikasi tidak boleh membuat petani mengisi data yang sulit diukur hanya demi menghasilkan perhitungan yang terlihat presisi.
+
+Lebih baik menggunakan:
+
+> **data aktual yang sederhana dan konsisten**
+
+daripada:
+
+> **data sangat rinci tetapi penuh estimasi dan tidak konsisten.**
+
+---
+
+# 25. Posisi iLasan Agri System
+
+Dengan arsitektur ini, iLasan Agri System diposisikan sebagai:
+
+> **Sistem Informasi Manajemen Usahatani dan Ketertelusuran Produk Pertanian**
+
+yang mengintegrasikan:
+
+**Petani → Lahan → Blok → Siklus → Tanaman → Aktivitas → Panen → Pascapanen → Pemasaran**
+
+serta:
+
+**Transaksi → Arus Kas → Aset → Penyusutan → Analisa Keuangan → Laporan**
+
+tanpa memaksakan alokasi biaya ke masing-masing komoditas.
+
+---
+
+## 26. Kesepakatan desain yang bersifat final
+
+Untuk pengembangan berikutnya, keputusan berikut dianggap telah dikunci:
+
+1. Nama aplikasi adalah **iLasan Agri System**.
+2. Satu petani dapat memiliki banyak lahan.
+3. Satu lahan dapat memiliki banyak blok.
+4. Satu blok dapat ditanami banyak komoditas.
+5. Sistem mendukung tumpangsari.
+6. Unit Budidaya merupakan kombinasi blok + siklus + tanaman.
+7. Aktivitas budidaya dicatat granular.
+8. Biaya **tidak dialokasikan** ke komoditas.
+9. Biaya dicatat berdasarkan transaksi aktual.
+10. Biaya dapat dianalisis berdasarkan jenis belanja dan item.
+11. Arus kas dapat dianalisis menurut periode.
+12. Penerimaan dapat dianalisis per komoditas.
+13. Panen menggunakan ID Batch.
+14. Batch panen dapat ditelusuri kembali sampai blok/lahan.
+15. Produk dapat ditelusuri dari batch sampai penjualan.
+16. Alat dan mesin dicatat sebagai aset.
+17. Perolehan aset mencatat tanggal, harga, dan kondisi baru/bekas.
+18. Penyusutan digunakan sebagai biaya non-kas periodik.
+19. Metode awal penyusutan adalah garis lurus.
+20. Laba/rugi dihitung terutama berdasarkan periode.
+21. Dashboard, analisa, dan laporan menjadi lapisan output.
+22. Arsitektur Apps Script menggunakan konfigurasi sheet terpusat.
+23. Pengembangan dilakukan secara modular dan bertahap.
+24. Struktur database diperlakukan seperti database relasional meskipun menggunakan Google Sheets.
+
+---
+
+**Dokumen ini menjadi baseline konseptual iLasan Agri System v0.1. Setiap perubahan arsitektur berikutnya harus mempertimbangkan konsistensinya terhadap prinsip-prinsip yang telah dikunci di atas.**

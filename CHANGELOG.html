@@ -1,0 +1,132 @@
+# Changelog — iLasan Agri System
+
+Dokumen ini mencatat progres implementasi terhadap **Bagian 23 (Tahapan Pengembangan)**
+pada `README.md`. `README.md` sendiri tidak diubah karena berfungsi sebagai baseline
+konseptual yang telah dikunci (Bagian 26).
+
+## v0.3.0
+
+- **Revert**: `Code.gs` dikembalikan memakai `SpreadsheetApp.getActiveSpreadsheet()`
+  langsung (tanpa helper `getSpreadsheet_()` dari patch v0.2.1), sesuai
+  permintaan — project Apps Script sekarang sudah container-bound ke
+  spreadsheet baru sehingga `getActiveSpreadsheet()` selalu tersedia.
+  Ditambahkan endpoint publik baru `getRecordById(sheetName, id)` yang
+  dipakai fitur Lihat/Edit/Cetak di bawah ini.
+- **Kolom "Aksi" di semua tabel CRUD**: setiap baris kini punya 4 aksi
+  konsisten — **Lihat** (modal detail seluruh kolom, termasuk yang tidak
+  ditampilkan di tabel ringkas), **Edit** (mengisi ulang form tambah di
+  atas tabel dengan data baris terpilih — submit ulang akan meng-update
+  baris tersebut, bukan membuat baru), **Cetak** (membuka modal detail
+  lalu langsung memicu dialog cetak browser, dibatasi CSS `@media print`
+  supaya hanya kartu detail yang tercetak), dan **Hapus** (seperti
+  sebelumnya). Berlaku di semua tabel yang terhubung ke sheet (bukan
+  tabel laporan/analisa yang sifatnya agregasi read-only).
+  - Data per baris disimpan sementara di `recordCache` sisi klien agar
+    Lihat/Edit/Cetak tidak perlu round-trip ke server lagi.
+  - Tabel Penyusutan tetap menampilkan Aksi untuk konsistensi, tapi
+    "Edit" pada tabel ini akan menampilkan pesan bahwa formulir edit
+    tidak tersedia (penyusutan memang dihasilkan sistem, bukan
+    diinput manual).
+- **Auto-hitung "Total"/"Jumlah"**: field `TOTAL` pada form Transaksi
+  Keuangan dan Penjualan (Pemasaran), serta `SUSUT` pada form Pascapanen,
+  sekarang dihitung otomatis (readonly) dari field lain di form yang sama
+  (`QTY × HARGA_SATUAN`, `VOLUME × HARGA_SATUAN`, `BERAT_MASUK − BERAT_KELUAR`)
+  — tidak lagi diinput manual.
+- **Format angka ribuan langsung saat mengetik**: semua field numerik
+  (`type:'number'` pada helper `field()`) kini berupa input teks dengan
+  pemisah ribuan Indonesia (`.`) yang muncul langsung saat mengetik —
+  misalnya mengetik "2000" langsung tampil "2.000". Nilai yang dikirim ke
+  server tetap angka murni (pemisah ribuan dan koma desimal dikonversi
+  balik sebelum disimpan).
+
+### Perubahan teknis
+
+- Tambahan di `AppJS.html`: `recordCache`/`cacheRows()`, modal detail
+  (`showDetailModal`, `closeModal`), `populateForm()` untuk mode edit,
+  `formatNumberInput()`/`parseFormattedNumber()`/`formatDisplayNumber()`
+  untuk format ribuan, serta `AUTO_TOTAL_RULES`/`AUTO_DIFF_RULES` untuk
+  auto-hitung field turunan.
+- Semua 15 form kini menyertakan hidden input untuk primary key sheet
+  masing-masing (mis. `ID_PETANI`, `ID_BATCH`) sehingga submit ulang
+  setelah "Edit" ter-deteksi sebagai update oleh `saveRecord_` (bukan
+  insert baru).
+- Markup modal ditambahkan ke `Index.html`; styling modal, kolom Aksi,
+  dan aturan `@media print` khusus modal ditambahkan ke `Styles.html`.
+
+## v0.2.1 (patch, sudah di-revert di v0.3.0)
+
+- **Perbaikan bug**: `setupApplication` (dan seluruh helper akses sheet di
+  `Code.gs`) sebelumnya memakai `SpreadsheetApp.getActiveSpreadsheet()`
+  secara langsung, yang mengembalikan `null` — dan menyebabkan error
+  `Cannot read properties of null (reading 'getSheetByName')` — jika
+  project Apps Script dibuat sebagai **standalone script** (dari
+  script.google.com) alih-alih **container-bound** (dari Extensions > Apps
+  Script di dalam sebuah Google Sheet).
+- Ditambahkan helper `getSpreadsheet_()` dengan fallback bertingkat:
+  1. Pakai spreadsheet aktif jika ada (container-bound).
+  2. Jika tidak ada, buka kembali spreadsheet yang ID-nya sudah tersimpan
+     di Script Properties dari pemanggilan sebelumnya.
+  3. Jika belum pernah ada sama sekali, buat spreadsheet baru bernama
+     "iLasan Agri System" dan simpan ID-nya.
+  
+  Dengan ini `setupApplication` dapat dijalankan baik dari script
+  standalone maupun container-bound tanpa error, dan URL spreadsheet yang
+  dipakai/dibuat ditampilkan sebagai notifikasi setelah setup berhasil.
+
+## v0.2.0 (build ini)
+
+Melanjutkan dari fondasi v0.1 (Tahap 1 selesai), build ini menuntaskan:
+
+- **Tahap 2 — Master Data**: modul Petani, Lahan, Blok, Komoditas, Varietas
+  lengkap dengan form tambah, tabel, dan hapus data. Dipusatkan di menu
+  **Data Lahan** (tab Petani / Lahan / Blok / Komoditas / Varietas).
+- **Tahap 3 — Siklus & Unit Budidaya**: Unit Budidaya (Blok + Siklus + Tanaman)
+  kini dapat dicatat lebih dari satu per siklus untuk mendukung tumpangsari.
+  Ada di menu **SOP Budidaya** (tab Siklus Budidaya / Unit Budidaya).
+- **Tahap 4 — SOP**: SOP master, tahapan (SOP_DETAIL), dan fitur
+  "Terapkan SOP ke Unit Budidaya" yang membuat rencana aktivitas otomatis
+  (tanggal = tanggal tanam + hari ke/HST).
+- **Tahap 5 — Aktivitas Budidaya**: form pencatatan aktivitas terhubung ke
+  Unit Budidaya (ID_SIKLUS terisi otomatis).
+- **Tahap 6 — Keuangan**: dipertahankan dari v0.1, ringkasan periode kini
+  juga menyertakan rincian per item.
+- **Tahap 7 — Panen, Pascapanen & Pemasaran**: form Panen (auto-isi
+  komoditas/varietas/blok dari Unit Budidaya), Pascapanen, Pemasaran
+  (terhubung ke batch), serta pencarian Traceability dua arah (backward ke
+  petani/lahan/blok, forward ke penjualan).
+- **Tahap 8 — Aset**: dipertahankan, ditambah modul **Penyusutan** (garis
+  lurus) dengan proyeksi jadwal bulanan dan pencatatan penyusutan per
+  periode.
+- **Tahap 9 — Analisa Usaha Tani**: Laba/Rugi Usahatani Per Periode
+  (kas masuk − kas keluar − penyusutan periode) dipisahkan dari Kinerja
+  Penerimaan Komoditas (dari data Pemasaran) — sesuai prinsip "tidak ada
+  alokasi biaya ke komoditas" (Bagian 5 & 9 README).
+- **Tahap 10 — Laporan**: laporan Budidaya per siklus, Keuangan per
+  periode, Produksi & Penjualan, dan Traceability, masing-masing dengan
+  tombol cetak (`window.print()`).
+
+### Perubahan teknis
+
+- `Code.gs` dipangkas menjadi hanya routing, setup database, dan helper
+  generik (`saveRecord_`, `getRecords_`, `deleteRecord_`, dst).
+- Logika per modul dipecah ke file `*API.gs` terpisah sesuai arah
+  arsitektur pada Bagian 22 README: `DashboardAPI.gs`, `MasterDataAPI.gs`,
+  `SiklusAPI.gs`, `SOPAPI.gs`, `AktivitasAPI.gs`, `KeuanganAPI.gs`,
+  `ProduksiAPI.gs` (Panen/Pascapanen/Pemasaran/Traceability),
+  `AsetAPI.gs`, `AnalisaAPI.gs`, `LaporanAPI.gs`. Nama sheet tetap
+  dipusatkan di `Config.gs`.
+- `saveRecord_` kini mendukung **update** (bila ID sudah ada) selain
+  insert baru, dan ditambah `deleteRecord_` + endpoint `deleteRecord()`
+  generik untuk tombol "Hapus" di setiap tabel.
+- `AppJS.html` ditulis ulang dengan pola `gsRun()` (pembungkus Promise
+  untuk `google.script.run`) dan `async/await` agar form bertingkat
+  (dropdown yang saling bergantung, mis. Blok → Lahan) lebih ringkas.
+
+### Belum dikerjakan / kandidat v0.3
+
+- Validasi input lebih ketat (mis. cegah Unit Budidaya tanpa Komoditas).
+- Edit-in-place pada tabel (saat ini update dilakukan lewat form yang
+  sama dengan mengisi ulang ID, hapus dulu lalu tambah lagi paling aman
+  untuk field yang membentuk relasi).
+- Export laporan ke PDF (saat ini hanya cetak via browser).
+- Dashboard tren (grafik biaya/arus kas dari waktu ke waktu).

@@ -1,0 +1,1100 @@
+<script>
+/* ============================================================
+   iLasan Agri System - Client Application
+   ============================================================ */
+
+let currentPage = 'dashboard';
+
+const pageTitles = {
+  dashboard:'Dashboard',
+  lahan:'Data Lahan',
+  sop:'SOP Budidaya',
+  aktivitas:'Aktivitas Budidaya',
+  keuangan:'Catatan Biaya & Arus Kas',
+  panen:'Panen & Pascapanen',
+  aset:'Alat & Mesin',
+  analisa:'Analisa Usaha Tani',
+  laporan:'Laporan'
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-item').forEach(btn => {
+    btn.addEventListener('click', () => openPage(btn.dataset.page));
+  });
+  openPage('dashboard');
+});
+
+function openPage(page){
+  currentPage = page;
+  document.querySelectorAll('.nav-item').forEach(x => x.classList.toggle('active', x.dataset.page===page));
+  document.getElementById('pageTitle').textContent = pageTitles[page] || page;
+
+  if(page==='dashboard') loadDashboard();
+  else if(page==='lahan') loadLahan();
+  else if(page==='sop') loadSop();
+  else if(page==='aktivitas') loadAktivitas();
+  else if(page==='keuangan') loadKeuangan();
+  else if(page==='panen') loadPanen();
+  else if(page==='aset') loadAset();
+  else if(page==='analisa') loadAnalisa();
+  else if(page==='laporan') loadLaporan();
+}
+
+function refreshCurrent(){ openPage(currentPage); }
+
+function setupApp(){
+  gsRun('setupApplication').then(r=>{
+    if(r.spreadsheetUrl){
+      toast(r.message+' Buka spreadsheet: '+r.spreadsheetUrl, 8000);
+    } else {
+      toast(r.message);
+    }
+  }).catch(showError);
+}
+
+/* ---------------- Promise wrapper untuk google.script.run ---------------- */
+function gsRun(fnName, ...args){
+  return new Promise((resolve, reject) => {
+    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fnName](...args);
+  });
+}
+
+async function submitForm(saveFn, event, afterFn){
+  event.preventDefault();
+  const form = event.target;
+  const data = extractFormData(form);
+  try{
+    const r = await gsRun(saveFn, data);
+    toast(r.message);
+    form.reset();
+    if(afterFn) await afterFn();
+  }catch(err){ showError(err); }
+}
+
+async function removeRecord(sheetName, id, afterFn, label){
+  if(!confirm('Hapus data '+(label||id)+'? Tindakan ini tidak dapat dibatalkan.')) return;
+  try{
+    const r = await gsRun('deleteRecord', sheetName, id);
+    toast(r.message);
+    if(afterFn) await afterFn();
+  }catch(err){ showError(err); }
+}
+
+/* ============================================================
+   CACHE RECORD (dipakai fitur Lihat/Edit/Cetak per baris tabel)
+   ============================================================ */
+let recordCache = {};
+
+function cacheRows(sheetName, rows, idField){
+  recordCache[sheetName] = {};
+  rows.forEach(r => { recordCache[sheetName][r[idField]] = r; });
+}
+
+function getCachedRecord(sheetName, id){
+  return (recordCache[sheetName] && recordCache[sheetName][id]) || null;
+}
+
+function viewRecord(sheetName, id){
+  const rec = getCachedRecord(sheetName, id);
+  if(!rec){ toast('Data tidak ditemukan, muat ulang halaman.'); return; }
+  showDetailModal(sheetName, rec);
+}
+
+function printRecordAction(sheetName, id){
+  const rec = getCachedRecord(sheetName, id);
+  if(!rec){ toast('Data tidak ditemukan.'); return; }
+  showDetailModal(sheetName, rec);
+  setTimeout(()=>window.print(), 200);
+}
+
+function editRecordAction(sheetName, id){
+  const rec = getCachedRecord(sheetName, id);
+  if(!rec){ toast('Data tidak ditemukan.'); return; }
+  const form = document.querySelector('#content form');
+  if(!form){ toast('Formulir edit tidak tersedia untuk data ini.'); return; }
+  populateForm(form, rec);
+  form.scrollIntoView({behavior:'smooth', block:'start'});
+  toast('Mode edit aktif - ubah data lalu klik tombol Simpan.');
+}
+
+function populateForm(form, rec){
+  Object.keys(rec).forEach(key=>{
+    const el = form.querySelector(`[name="${key}"]`);
+    if(!el) return;
+    if(el.classList.contains('fmt-number')){
+      el.value = formatDisplayNumber(Number(rec[key])||0);
+    } else {
+      el.value = rec[key] === null || rec[key] === undefined ? '' : rec[key];
+    }
+  });
+}
+
+function hiddenId(name){
+  return `<input type="hidden" name="${name}" value="">`;
+}
+
+function formActions(label){
+  return `<div class="form-actions">
+    <button type="submit" class="btn btn-primary">${label}</button>
+    <button type="button" class="btn btn-secondary" onclick="this.closest('form').reset()">Batal</button>
+  </div>`;
+}
+
+function computedField(name, label){
+  return `<div class="field"><label>${label}</label><input name="${name}" type="text" inputmode="decimal" class="fmt-number readonly-field" value="" readonly></div>`;
+}
+
+/* ---------------- Modal Detail (Lihat / Cetak) ---------------- */
+function showDetailModal(sheetName, rec){
+  const idKey = Object.keys(rec)[0];
+  const title = prettyCol(sheetName) + ' — ' + (rec[idKey] || '');
+  const rowsHtml = Object.keys(rec).map(k =>
+    `<div class="detail-row"><div class="detail-label">${prettyCol(k)}</div><div class="detail-value">${formatCell(rec[k],k)}</div></div>`
+  ).join('');
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalBody').innerHTML = rowsHtml || '<div class="empty">Tidak ada data.</div>';
+  document.getElementById('detailModal').classList.remove('hidden');
+  document.body.classList.add('modal-open');
+}
+
+function closeModal(){
+  document.getElementById('detailModal').classList.add('hidden');
+  document.body.classList.remove('modal-open');
+}
+
+window.addEventListener('afterprint', () => {
+  if(document.body.classList.contains('modal-open')) closeModal();
+});
+
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeModal(); });
+
+/* ---------------- Format angka: input teks dgn pemisah ribuan live ---------------- */
+function formatNumberInput(el){
+  let raw = el.value.replace(/[^0-9,]/g,'');
+  const firstComma = raw.indexOf(',');
+  if(firstComma !== -1){
+    raw = raw.slice(0,firstComma+1) + raw.slice(firstComma+1).replace(/,/g,'');
+  }
+  const parts = raw.split(',');
+  let intPart = parts[0].replace(/^0+(?=\d)/,'');
+  intPart = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const decPart = parts.length > 1 ? parts[1].slice(0,2) : null;
+  el.value = decPart !== null ? intPart + ',' + decPart : intPart;
+}
+
+function parseFormattedNumber(str){
+  if(str === undefined || str === null || str === '') return 0;
+  const cleaned = String(str).replace(/\./g,'').replace(',', '.');
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? 0 : n;
+}
+
+function formatDisplayNumber(n){
+  if(n === null || n === undefined || isNaN(n) || n === 0) return n === 0 ? '0' : '';
+  const isInt = Number.isInteger(n);
+  return n.toLocaleString('id-ID', {maximumFractionDigits: isInt ? 0 : 2});
+}
+
+/** Field "Total"/"Jumlah" yang dihitung otomatis dari field lain pada form yang sama. */
+const AUTO_TOTAL_RULES = [
+  {qty:'QTY', harga:'HARGA_SATUAN', total:'TOTAL'},     // Keuangan
+  {qty:'VOLUME', harga:'HARGA_SATUAN', total:'TOTAL'}   // Pemasaran
+];
+const AUTO_DIFF_RULES = [
+  {a:'BERAT_MASUK', b:'BERAT_KELUAR', result:'SUSUT'}   // Pascapanen
+];
+
+function recalcAutoFields(form, changedName){
+  AUTO_TOTAL_RULES.forEach(rule => {
+    if(changedName !== rule.qty && changedName !== rule.harga) return;
+    const qtyEl = form.querySelector(`[name="${rule.qty}"]`);
+    const hargaEl = form.querySelector(`[name="${rule.harga}"]`);
+    const totalEl = form.querySelector(`[name="${rule.total}"]`);
+    if(!qtyEl || !hargaEl || !totalEl) return;
+    const q = parseFormattedNumber(qtyEl.value);
+    const h = parseFormattedNumber(hargaEl.value);
+    totalEl.value = formatDisplayNumber(q*h);
+  });
+  AUTO_DIFF_RULES.forEach(rule => {
+    if(changedName !== rule.a && changedName !== rule.b) return;
+    const aEl = form.querySelector(`[name="${rule.a}"]`);
+    const bEl = form.querySelector(`[name="${rule.b}"]`);
+    const rEl = form.querySelector(`[name="${rule.result}"]`);
+    if(!aEl || !bEl || !rEl) return;
+    const av = parseFormattedNumber(aEl.value);
+    const bv = parseFormattedNumber(bEl.value);
+    rEl.value = formatDisplayNumber(Math.max(0, av-bv));
+  });
+}
+
+document.addEventListener('input', e => {
+  const t = e.target;
+  if(!t || !t.classList || !t.classList.contains('fmt-number')) return;
+  formatNumberInput(t);
+  if(t.form) recalcAutoFields(t.form, t.name);
+});
+
+/** Ambil data form sebagai object, mengonversi field .fmt-number ke angka mentah. */
+function extractFormData(form){
+  const data = Object.fromEntries(new FormData(form).entries());
+  form.querySelectorAll('.fmt-number').forEach(inp => {
+    data[inp.name] = parseFormattedNumber(inp.value);
+  });
+  return data;
+}
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
+async function loadDashboard(){
+  document.getElementById('content').innerHTML = '<div class="empty">Memuat dashboard...</div>';
+  try{
+    const d = await gsRun('getDashboardData');
+    renderDashboard(d);
+  }catch(err){ showError(err); }
+}
+
+function renderDashboard(d){
+  document.getElementById('content').innerHTML = `
+    <div class="grid grid-4">
+      ${metric('Petani',d.petani,'Data petani terdaftar')}
+      ${metric('Lahan',d.lahan,'Unit lahan')}
+      ${metric('Blok',d.blok,'Unit spasial operasional')}
+      ${metric('Siklus Budidaya',d.siklus,d.siklusAktif+' sedang berjalan')}
+      ${metric('Unit Budidaya',d.unitBudidaya,'Kombinasi blok+siklus+tanaman')}
+      ${metric('Aktivitas',d.aktivitas,d.aktivitasTerlambat+' berpotensi terlambat')}
+      ${metric('Batch Panen',d.panen,'Hasil panen tercatat')}
+      ${metric('Alat & Mesin',d.assets,'Aset terdaftar')}
+    </div>
+    <div class="grid grid-2" style="margin-top:16px">
+      <div class="card">
+        <div class="section-title">Posisi Arus Kas (Kumulatif)</div>
+        <div class="metric-value">${rupiah(d.saldo)}</div>
+        <div class="metric-note">Kas Masuk ${rupiah(d.kasMasuk)} &middot; Kas Keluar ${rupiah(d.kasKeluar)}</div>
+      </div>
+      <div class="card">
+        <div class="section-title">Perhatian</div>
+        <div class="metric-value">${d.aktivitasTerlambat}</div>
+        <div class="metric-note">Aktivitas terjadwal yang belum selesai dan sudah lewat tanggal</div>
+      </div>
+    </div>
+  `;
+}
+
+function metric(label,value,note){
+  return `<div class="card"><div class="metric-label">${label}</div><div class="metric-value">${value}</div><div class="metric-note">${note}</div></div>`;
+}
+
+/* ============================================================
+   DATA LAHAN  (Petani -> Lahan -> Blok, + Komoditas/Varietas)
+   ============================================================ */
+let masterTab = 'petani';
+
+async function loadLahan(){
+  document.getElementById('content').innerHTML = masterShell();
+  await renderMasterTab();
+}
+
+function masterShell(){
+  const tabs = [
+    ['petani','Petani'],['lahan','Lahan'],['blok','Blok'],
+    ['komoditas','Komoditas'],['varietas','Varietas']
+  ];
+  return `<div class="tabs">${tabs.map(([k,l])=>tabBtn(k,l,masterTab,'switchMasterTab')).join('')}</div>
+  <div id="subContent" class="tab-panel"><div class="empty">Memuat...</div></div>`;
+}
+
+function tabBtn(key,label,active,fn){
+  return `<button class="tab-btn ${active===key?'active':''}" onclick="${fn}('${key}',event)">${label}</button>`;
+}
+
+async function switchMasterTab(tab, evt){
+  masterTab = tab;
+  document.querySelectorAll('#content .tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+  if(evt) evt.target.classList.add('active');
+  await renderMasterTab();
+}
+
+async function renderMasterTab(){
+  const el = document.getElementById('subContent');
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+
+  if(masterTab==='petani'){
+    const rows = await gsRun('getPetaniData');
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Petani</div>
+      <form onsubmit="submitForm('savePetani',event,renderMasterTab)" class="form-grid">
+        ${hiddenId('ID_PETANI')}
+        ${field('NAMA','Nama Petani','text','',true)}
+        ${field('NIK','NIK')}
+        ${field('TELEPON','Telepon')}
+        ${field('ALAMAT','Alamat')}
+        ${field('DESA','Desa')}
+        ${field('KECAMATAN','Kecamatan')}
+        ${field('KABUPATEN','Kabupaten')}
+        ${field('STATUS','Status','select',['Aktif','Tidak Aktif'])}
+        ${formActions('Simpan Petani')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Petani</div>
+      ${table(rows,['ID_PETANI','NAMA','NIK','TELEPON','DESA','KECAMATAN','STATUS'],'PETANI','ID_PETANI','NAMA','renderMasterTab()')}</div>`;
+  }
+
+  else if(masterTab==='lahan'){
+    const [rows, petani] = await Promise.all([gsRun('getLahanData'), gsRun('getPetaniData')]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Lahan</div>
+      <form onsubmit="submitForm('saveLahan',event,renderMasterTab)" class="form-grid">
+        ${hiddenId('ID_LAHAN')}
+        ${selectField('ID_PETANI','Petani',petani.map(p=>({value:p.ID_PETANI,label:p.NAMA})),true)}
+        ${field('NAMA_LAHAN','Nama Lahan','text','',true)}
+        ${field('LOKASI','Lokasi')}
+        ${field('DESA','Desa')}
+        ${field('KECAMATAN','Kecamatan')}
+        ${field('KABUPATEN','Kabupaten')}
+        ${field('LUAS','Luas','number')}
+        ${field('SATUAN_LUAS','Satuan Luas','text','m²')}
+        ${field('STATUS','Status','select',['Aktif','Tidak Aktif'])}
+        ${field('KOORDINAT','Koordinat')}
+        <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+        ${formActions('Simpan Lahan')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Lahan</div>
+      ${table(rows,['ID_LAHAN','NAMA_PETANI','NAMA_LAHAN','DESA','KECAMATAN','LUAS','SATUAN_LUAS','STATUS'],'LAHAN','ID_LAHAN','NAMA_LAHAN','renderMasterTab()')}</div>`;
+  }
+
+  else if(masterTab==='blok'){
+    const [rows, lahan] = await Promise.all([gsRun('getBlokData'), gsRun('getLahanData')]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Blok</div>
+      <p class="muted">Satu lahan dapat memiliki banyak blok; satu blok kelak dapat ditanami lebih dari satu komoditas (tumpangsari) melalui Unit Budidaya di menu SOP Budidaya.</p>
+      <form onsubmit="submitForm('saveBlok',event,renderMasterTab)" class="form-grid">
+        ${hiddenId('ID_BLOK')}
+        ${selectField('ID_LAHAN','Lahan',lahan.map(l=>({value:l.ID_LAHAN,label:l.NAMA_LAHAN+' ('+l.NAMA_PETANI+')'})),true)}
+        ${field('NAMA_BLOK','Nama Blok','text','',true)}
+        ${field('LUAS','Luas','number')}
+        ${field('SATUAN_LUAS','Satuan Luas','text','m²')}
+        ${field('STATUS','Status','select',['Aktif','Tidak Aktif'])}
+        ${field('KOORDINAT','Koordinat')}
+        <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+        ${formActions('Simpan Blok')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Blok</div>
+      ${table(rows,['ID_BLOK','NAMA_LAHAN','NAMA_BLOK','LUAS','SATUAN_LUAS','STATUS'],'BLOK','ID_BLOK','NAMA_BLOK','renderMasterTab()')}</div>`;
+  }
+
+  else if(masterTab==='komoditas'){
+    const rows = await gsRun('getKomoditasData');
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Komoditas</div>
+      <form onsubmit="submitForm('saveKomoditas',event,renderMasterTab)" class="form-grid">
+        ${hiddenId('ID_KOMODITAS')}
+        ${field('NAMA_KOMODITAS','Nama Komoditas','text','',true)}
+        ${field('KATEGORI','Kategori','text','Sayuran/Buah/Palawija')}
+        ${field('SATUAN','Satuan Panen','text','kg')}
+        ${field('STATUS','Status','select',['Aktif','Tidak Aktif'])}
+        ${formActions('Simpan Komoditas')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Komoditas</div>
+      ${table(rows,['ID_KOMODITAS','NAMA_KOMODITAS','KATEGORI','SATUAN','STATUS'],'KOMODITAS','ID_KOMODITAS','NAMA_KOMODITAS','renderMasterTab()')}</div>`;
+  }
+
+  else if(masterTab==='varietas'){
+    const [rows, komoditas] = await Promise.all([gsRun('getVarietasData'), gsRun('getKomoditasData')]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Varietas</div>
+      <form onsubmit="submitForm('saveVarietas',event,renderMasterTab)" class="form-grid">
+        ${hiddenId('ID_VARIETAS')}
+        ${selectField('ID_KOMODITAS','Komoditas',komoditas.map(k=>({value:k.ID_KOMODITAS,label:k.NAMA_KOMODITAS})),true)}
+        ${field('NAMA_VARIETAS','Nama Varietas','text','',true)}
+        ${field('SUMBER_BENIH','Sumber Benih')}
+        ${field('STATUS','Status','select',['Aktif','Tidak Aktif'])}
+        <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+        ${formActions('Simpan Varietas')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Varietas</div>
+      ${table(rows,['ID_VARIETAS','NAMA_KOMODITAS','NAMA_VARIETAS','SUMBER_BENIH','STATUS'],'VARIETAS','ID_VARIETAS','NAMA_VARIETAS','renderMasterTab()')}</div>`;
+  }
+}
+
+/* ============================================================
+   SOP BUDIDAYA (Siklus, Unit Budidaya, SOP, SOP Detail)
+   ============================================================ */
+let sopTab = 'siklus';
+
+async function loadSop(){
+  document.getElementById('content').innerHTML = sopShell();
+  await renderSopTab();
+}
+
+function sopShell(){
+  const tabs = [
+    ['siklus','Siklus Budidaya'],['unit','Unit Budidaya'],
+    ['sopmaster','SOP Master'],['sopdetail','Tahapan SOP']
+  ];
+  return `<div class="tabs">${tabs.map(([k,l])=>tabBtn(k,l,sopTab,'switchSopTab')).join('')}</div>
+  <div id="subContent" class="tab-panel"><div class="empty">Memuat...</div></div>`;
+}
+
+async function switchSopTab(tab, evt){
+  sopTab = tab;
+  document.querySelectorAll('#content .tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+  if(evt) evt.target.classList.add('active');
+  await renderSopTab();
+}
+
+async function renderSopTab(){
+  const el = document.getElementById('subContent');
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+
+  if(sopTab==='siklus'){
+    const [rows, blok] = await Promise.all([gsRun('getSiklusData'), gsRun('getBlokData')]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Buat Siklus Budidaya</div>
+      <p class="muted">Satu blok dapat memiliki banyak siklus dari waktu ke waktu (contoh: MT-2026-01, MT-2026-02).</p>
+      <form onsubmit="submitForm('saveSiklus',event,renderSopTab)" class="form-grid">
+        ${hiddenId('ID_SIKLUS')}
+        ${selectField('ID_BLOK','Blok',blok.map(b=>({value:b.ID_BLOK,label:b.NAMA_BLOK+' ('+b.NAMA_LAHAN+')'})),true)}
+        ${field('NAMA_SIKLUS','Nama Siklus','text','MT-2026-01',true)}
+        ${field('TANGGAL_MULAI','Tanggal Mulai','date')}
+        ${field('TANGGAL_SELESAI','Tanggal Selesai','date')}
+        ${field('SISTEM_TANAM','Sistem Tanam','select',['Monokultur','Tumpangsari'])}
+        ${field('STATUS','Status','select',['Aktif','Selesai'])}
+        <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+        ${formActions('Simpan Siklus')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Siklus Budidaya</div>
+      ${table(rows,['ID_SIKLUS','NAMA_BLOK','NAMA_SIKLUS','TANGGAL_MULAI','TANGGAL_SELESAI','SISTEM_TANAM','STATUS'],'SIKLUS','ID_SIKLUS','NAMA_SIKLUS','renderSopTab()')}</div>`;
+  }
+
+  else if(sopTab==='unit'){
+    const [rows, siklus, komoditas, varietas] = await Promise.all([
+      gsRun('getUnitBudidayaData'), gsRun('getSiklusData'), gsRun('getKomoditasData'), gsRun('getVarietasData')
+    ]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Unit Budidaya</div>
+      <p class="muted">Unit Budidaya = Blok + Siklus + Tanaman. Tambahkan lebih dari satu Unit Budidaya pada siklus yang sama untuk mencatat tumpangsari.</p>
+      <form onsubmit="submitForm('saveUnitBudidaya',event,renderSopTab)" class="form-grid">
+        ${hiddenId('ID_UNIT')}
+        ${selectField('ID_SIKLUS','Siklus Budidaya',siklus.map(s=>({value:s.ID_SIKLUS,label:s.NAMA_SIKLUS+' - '+s.NAMA_BLOK})),true)}
+        ${selectField('ID_KOMODITAS','Komoditas',komoditas.map(k=>({value:k.ID_KOMODITAS,label:k.NAMA_KOMODITAS})),true)}
+        ${selectField('ID_VARIETAS','Varietas',varietas.map(v=>({value:v.ID_VARIETAS,label:v.NAMA_VARIETAS+' ('+v.NAMA_KOMODITAS+')'})))}
+        ${field('LUAS','Luas','number')}
+        ${field('SATUAN_LUAS','Satuan Luas','text','m²')}
+        ${field('PROPORSI','Proporsi dari Blok (%)','number')}
+        ${field('JUMLAH_TANAMAN','Jumlah Tanaman','number')}
+        ${field('TANGGAL_TANAM','Tanggal Tanam','date')}
+        <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+        ${formActions('Simpan Unit Budidaya')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar Unit Budidaya</div>
+      ${table(rows,['ID_UNIT','NAMA_SIKLUS','NAMA_BLOK','NAMA_KOMODITAS','NAMA_VARIETAS','LUAS','JUMLAH_TANAMAN','TANGGAL_TANAM'],'UNIT_BUDIDAYA','ID_UNIT','ID_UNIT','renderSopTab()')}</div>`;
+  }
+
+  else if(sopTab==='sopmaster'){
+    const [rows, komoditas] = await Promise.all([gsRun('getSopData'), gsRun('getKomoditasData')]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Buat SOP</div>
+      <form onsubmit="submitForm('saveSop',event,renderSopTab)" class="form-grid">
+        ${hiddenId('ID_SOP')}
+        ${selectField('ID_KOMODITAS','Komoditas',komoditas.map(k=>({value:k.ID_KOMODITAS,label:k.NAMA_KOMODITAS})),true)}
+        ${field('NAMA_SOP','Nama SOP','text','',true)}
+        ${field('VERSI','Versi','text','1.0')}
+        ${field('STATUS','Status','select',['Aktif','Draft'])}
+        ${formActions('Simpan SOP')}
+      </form></div>
+      <div class="card" style="margin-top:16px"><div class="section-title">Daftar SOP</div>
+      ${table(rows,['ID_SOP','NAMA_KOMODITAS','NAMA_SOP','VERSI','STATUS'],'SOP','ID_SOP','NAMA_SOP','renderSopTab()')}</div>`;
+  }
+
+  else if(sopTab==='sopdetail'){
+    const [sop, unit] = await Promise.all([gsRun('getSopData'), gsRun('getUnitBudidayaData')]);
+    el.innerHTML = `
+      <div class="card"><div class="section-title">Tambah Tahapan SOP</div>
+      <form onsubmit="submitForm('saveSopDetail',event,()=>renderSopDetailList(document.querySelector('[name=ID_SOP_FILTER]').value))" class="form-grid">
+        ${hiddenId('ID_SOP_DETAIL')}
+        ${selectField('ID_SOP','SOP',sop.map(s=>({value:s.ID_SOP,label:s.NAMA_SOP+' ('+s.NAMA_KOMODITAS+')'})),true)}
+        ${field('URUTAN','Urutan','number')}
+        ${field('TAHAPAN','Tahapan','text','Pengendalian OPT')}
+        ${field('AKTIVITAS','Aktivitas','text','Penyemprotan')}
+        ${field('HARI_KE','Hari Ke (HST)','number')}
+        ${field('TOLERANSI_HARI','Toleransi Hari','number')}
+        <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+        ${formActions('Simpan Tahapan')}
+      </form></div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="section-title">Lihat Tahapan per SOP</div>
+        <div class="form-grid">
+          ${selectField('ID_SOP_FILTER','Pilih SOP',sop.map(s=>({value:s.ID_SOP,label:s.NAMA_SOP+' ('+s.NAMA_KOMODITAS+')'})))}
+        </div>
+        <div class="form-actions"><button class="btn btn-secondary" onclick="renderSopDetailList(document.querySelector('[name=ID_SOP_FILTER]').value)">Tampilkan Tahapan</button></div>
+        <div id="sopDetailList" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="section-title">Terapkan SOP ke Unit Budidaya (Buat Rencana Aktivitas Otomatis)</div>
+        <p class="muted">Sistem akan membuat rencana aktivitas untuk setiap tahapan SOP, dijadwalkan dari tanggal tanam + hari ke (HST).</p>
+        <div class="form-grid">
+          ${selectField('APPLY_UNIT','Unit Budidaya',unit.map(u=>({value:u.ID_UNIT,label:u.NAMA_KOMODITAS+' - '+u.NAMA_SIKLUS+' - '+u.NAMA_BLOK})))}
+          ${selectField('APPLY_SOP','SOP',sop.map(s=>({value:s.ID_SOP,label:s.NAMA_SOP+' ('+s.NAMA_KOMODITAS+')'})))}
+          ${field('APPLY_TANGGAL','Tanggal Tanam','date')}
+        </div>
+        <div class="form-actions"><button class="btn btn-primary" onclick="applySopToUnit()">Terapkan SOP</button></div>
+      </div>`;
+  }
+}
+
+async function renderSopDetailList(idSop){
+  const el = document.getElementById('sopDetailList');
+  if(!idSop){ el.innerHTML = '<div class="empty">Pilih SOP terlebih dahulu.</div>'; return; }
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+  const rows = await gsRun('getSopDetailData', idSop);
+  el.innerHTML = table(rows,['URUTAN','TAHAPAN','AKTIVITAS','HARI_KE','TOLERANSI_HARI'],'SOP_DETAIL','ID_SOP_DETAIL','TAHAPAN',`renderSopDetailList('${idSop}')`);
+}
+
+async function applySopToUnit(){
+  const idUnit = document.querySelector('[name=APPLY_UNIT]').value;
+  const idSop = document.querySelector('[name=APPLY_SOP]').value;
+  const tgl = document.querySelector('[name=APPLY_TANGGAL]').value;
+  if(!idUnit || !idSop || !tgl){ toast('Lengkapi Unit Budidaya, SOP, dan Tanggal Tanam.'); return; }
+  try{
+    const r = await gsRun('generateAktivitasFromSOP', idUnit, idSop, tgl);
+    toast(r.message);
+  }catch(err){ showError(err); }
+}
+
+/* ============================================================
+   AKTIVITAS BUDIDAYA
+   ============================================================ */
+async function loadAktivitas(){
+  document.getElementById('content').innerHTML = '<div class="empty">Memuat...</div>';
+  const [rows, unit] = await Promise.all([gsRun('getAktivitasData'), gsRun('getUnitBudidayaData')]);
+  document.getElementById('content').innerHTML = `
+    <div class="card"><div class="section-title">Catat Aktivitas Budidaya</div>
+    <p class="muted">Aktivitas dicatat granular per unit budidaya. Nilai biaya tidak dipaksakan pada aktivitas - catat transaksi keuangannya secara terpisah di menu Catatan Biaya & Arus Kas.</p>
+    <form onsubmit="submitForm('saveAktivitas',event,loadAktivitas)" class="form-grid">
+        ${hiddenId('ID_AKTIVITAS')}
+      ${selectField('ID_UNIT','Unit Budidaya',unit.map(u=>({value:u.ID_UNIT,label:u.NAMA_KOMODITAS+' - '+u.NAMA_SIKLUS+' - '+u.NAMA_BLOK})),true)}
+      ${field('TANGGAL','Tanggal','date')}
+      ${field('TAHAPAN','Tahapan','text','Pengendalian OPT')}
+      ${field('AKTIVITAS','Aktivitas','text','Penyemprotan')}
+      ${field('INPUT','Input','text','Insektisida X')}
+      ${field('DOSIS','Dosis','text','2 ml/L')}
+      ${field('VOLUME','Volume','number')}
+      ${field('SATUAN','Satuan')}
+      ${field('OPT_SASARAN','OPT Sasaran')}
+      ${field('STATUS','Status','select',['Rencana','Berjalan','Selesai'])}
+      <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+      ${formActions('Simpan Aktivitas')}
+    </form></div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Riwayat Aktivitas</div>
+    ${table(rows,['ID_AKTIVITAS','NAMA_SIKLUS','TANGGAL','TAHAPAN','AKTIVITAS','INPUT','DOSIS','VOLUME','STATUS'],'AKTIVITAS','ID_AKTIVITAS','AKTIVITAS','loadAktivitas()')}</div>`;
+}
+
+/* ============================================================
+   CATATAN BIAYA & ARUS KAS
+   ============================================================ */
+async function loadKeuangan(){
+  document.getElementById('content').innerHTML = '<div class="empty">Memuat...</div>';
+  const rows = await gsRun('getKeuanganData');
+  document.getElementById('content').innerHTML = `
+    <div class="card">${formKeuangan()}</div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Transaksi Keuangan</div>
+    ${table(rows,['ID_TRANSAKSI','TANGGAL','JENIS','KATEGORI','ITEM','QTY','SATUAN','HARGA_SATUAN','TOTAL','METODE_PEMBAYARAN'],'KEUANGAN','ID_TRANSAKSI','ITEM','loadKeuangan()')}</div>`;
+}
+
+function formKeuangan(){
+ return `<div class="section-title">Catat Transaksi</div>
+ <form onsubmit="submitKeuangan(event)" class="form-grid">
+ ${hiddenId('ID_TRANSAKSI')}
+ ${field('TANGGAL','Tanggal','date')}
+ ${field('PERIODE','Periode','text','YYYY-MM')}
+ ${field('JENIS','Jenis','select',['KAS KELUAR','KAS MASUK'])}
+ ${field('KATEGORI','Kategori','select',['Benih','Pupuk','Pestisida','Tenaga Kerja','BBM','Transportasi','Pemeliharaan','Pembelian Aset','Kemasan','Sewa','Air/Listrik','Penjualan Hasil Panen','Pendapatan Lain','Lainnya'])}
+ ${field('ITEM','Item')}
+ ${field('DESKRIPSI','Deskripsi')}
+ ${field('QTY','Qty','number')}
+ ${field('SATUAN','Satuan')}
+ ${field('HARGA_SATUAN','Harga Satuan','number')}
+ ${computedField('TOTAL','Total (otomatis)')}
+ ${field('METODE_PEMBAYARAN','Metode','select',['Tunai','Transfer','Lainnya'])}
+ ${field('SUMBER_DANA','Sumber Dana')}
+ ${field('REFERENSI','Referensi/Bukti')}
+ <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+ ${formActions('Simpan Transaksi')}
+ </form>`;
+}
+
+async function submitKeuangan(e){
+ e.preventDefault();
+ const data = extractFormData(e.target);
+ if(!data.TOTAL) data.TOTAL = data.QTY*data.HARGA_SATUAN;
+ try{
+   const r = await gsRun('saveKeuangan', data);
+   toast(r.message); e.target.reset(); loadKeuangan();
+ }catch(err){ showError(err); }
+}
+
+/* ============================================================
+   PANEN & PASCAPANEN (+ Pemasaran & Traceability)
+   ============================================================ */
+let panenTab = 'panen';
+
+async function loadPanen(){
+  document.getElementById('content').innerHTML = panenShell();
+  await renderPanenTab();
+}
+
+function panenShell(){
+  const tabs = [['panen','Panen'],['pascapanen','Pascapanen'],['pemasaran','Pemasaran'],['trace','Traceability']];
+  return `<div class="tabs">${tabs.map(([k,l])=>tabBtn(k,l,panenTab,'switchPanenTab')).join('')}</div>
+  <div id="subContent" class="tab-panel"><div class="empty">Memuat...</div></div>`;
+}
+
+async function switchPanenTab(tab, evt){
+  panenTab = tab;
+  document.querySelectorAll('#content .tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+  if(evt) evt.target.classList.add('active');
+  await renderPanenTab();
+}
+
+async function renderPanenTab(){
+  const el = document.getElementById('subContent');
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+
+  if(panenTab==='panen'){
+    const [rows, unit] = await Promise.all([gsRun('getPanenData'), gsRun('getUnitBudidayaData')]);
+    el.innerHTML = `
+    <div class="card"><div class="section-title">Catat Panen (Batch)</div>
+    <p class="muted">Komoditas, varietas, dan blok otomatis terisi dari Unit Budidaya yang dipilih agar traceability tetap konsisten.</p>
+    <form onsubmit="submitForm('savePanen',event,renderPanenTab)" class="form-grid">
+        ${hiddenId('ID_BATCH')}
+      ${selectField('ID_UNIT','Unit Budidaya',unit.map(u=>({value:u.ID_UNIT,label:u.NAMA_KOMODITAS+' - '+u.NAMA_SIKLUS+' - '+u.NAMA_BLOK})),true)}
+      ${field('TANGGAL_PANEN','Tanggal Panen','date')}
+      ${field('BERAT_TOTAL','Berat Total','number')}
+      ${field('SATUAN','Satuan','text','kg')}
+      ${field('GRADE_A','Grade A','number')}
+      ${field('GRADE_B','Grade B','number')}
+      ${field('AFKIR','Afkir','number')}
+      ${field('LOKASI_PENYIMPANAN','Lokasi Penyimpanan')}
+      ${field('STATUS','Status','select',['Tersimpan','Terjual Sebagian','Terjual Semua'])}
+      <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+      ${formActions('Simpan Batch Panen')}
+    </form></div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Daftar Batch Panen</div>
+    ${table(rows,['ID_BATCH','TANGGAL_PANEN','KOMODITAS','VARIETAS','BLOK','BERAT_TOTAL','SATUAN','GRADE_A','GRADE_B','AFKIR','STATUS'],'PANEN','ID_BATCH','ID_BATCH','renderPanenTab()')}</div>`;
+  }
+
+  else if(panenTab==='pascapanen'){
+    const [rows, batch] = await Promise.all([gsRun('getPascapanenData'), gsRun('getPanenData')]);
+    el.innerHTML = `
+    <div class="card"><div class="section-title">Catat Proses Pascapanen</div>
+    <form onsubmit="submitForm('savePascapanen',event,renderPanenTab)" class="form-grid">
+        ${hiddenId('ID_PASCAPANEN')}
+      ${selectField('ID_BATCH','Batch Panen',batch.map(b=>({value:b.ID_BATCH,label:b.ID_BATCH+' - '+b.KOMODITAS+' ('+b.TANGGAL_PANEN+')'})),true)}
+      ${field('TANGGAL','Tanggal','date')}
+      ${field('PROSES','Proses','select',['Sortasi','Grading','Pembersihan','Pengemasan','Penyimpanan'])}
+      ${field('BERAT_MASUK','Berat Masuk','number')}
+      ${field('BERAT_KELUAR','Berat Keluar','number')}
+      ${computedField('SUSUT','Susut (otomatis)')}
+      ${field('SATUAN','Satuan','text','kg')}
+      <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+      ${formActions('Simpan Pascapanen')}
+    </form></div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Riwayat Pascapanen</div>
+    ${table(rows,['ID_PASCAPANEN','ID_BATCH','TANGGAL','PROSES','BERAT_MASUK','BERAT_KELUAR','SUSUT','SATUAN'],'PASCAPANEN','ID_PASCAPANEN','PROSES','renderPanenTab()')}</div>`;
+  }
+
+  else if(panenTab==='pemasaran'){
+    const [rows, batch] = await Promise.all([gsRun('getPemasaranData'), gsRun('getPanenData')]);
+    el.innerHTML = `
+    <div class="card"><div class="section-title">Catat Penjualan</div>
+    <p class="muted">Penjualan tetap dihubungkan ke batch panen agar asal barang dapat ditelusuri (forward traceability).</p>
+    <form onsubmit="submitForm('savePemasaran',event,renderPanenTab)" class="form-grid">
+        ${hiddenId('ID_PENJUALAN')}
+      ${selectField('ID_BATCH','Batch Panen',batch.map(b=>({value:b.ID_BATCH,label:b.ID_BATCH+' - '+b.KOMODITAS+' ('+b.TANGGAL_PANEN+')'})),true)}
+      ${field('TANGGAL','Tanggal','date')}
+      ${field('PEMBELI','Pembeli')}
+      ${field('VOLUME','Volume','number')}
+      ${field('SATUAN','Satuan','text','kg')}
+      ${field('HARGA_SATUAN','Harga Satuan','number')}
+      ${computedField('TOTAL','Total (otomatis)')}
+      <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+      ${formActions('Simpan Penjualan')}
+    </form></div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Riwayat Penjualan</div>
+    ${table(rows,['ID_PENJUALAN','ID_BATCH','TANGGAL','PEMBELI','KOMODITAS','VOLUME','SATUAN','HARGA_SATUAN','TOTAL'],'PEMASARAN','ID_PENJUALAN','PEMBELI','renderPanenTab()')}</div>`;
+  }
+
+  else if(panenTab==='trace'){
+    const batch = await gsRun('getPanenData');
+    el.innerHTML = `
+    <div class="card"><div class="section-title">Ketertelusuran Produk (Traceability)</div>
+    <div class="form-grid">
+      ${selectField('TRACE_BATCH','Pilih Batch Panen',batch.map(b=>({value:b.ID_BATCH,label:b.ID_BATCH+' - '+b.KOMODITAS+' ('+b.TANGGAL_PANEN+')'})))}
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="runTrace()">Telusuri</button></div>
+    <div id="traceResult" style="margin-top:16px"></div>
+    </div>`;
+  }
+}
+
+async function runTrace(){
+  const id = document.querySelector('[name=TRACE_BATCH]').value;
+  const el = document.getElementById('traceResult');
+  if(!id){ el.innerHTML = '<div class="empty">Pilih batch panen.</div>'; return; }
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+  try{
+    const r = await gsRun('getTraceability', id);
+    if(!r.ok){ el.innerHTML = `<div class="empty">${r.message}</div>`; return; }
+    el.innerHTML = `
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="section-title">Backward Traceability</div>
+        <p><b>Petani:</b> ${r.petani?r.petani.NAMA:'-'}</p>
+        <p><b>Lahan:</b> ${r.lahan?r.lahan.NAMA_LAHAN:'-'}</p>
+        <p><b>Blok:</b> ${r.blok?r.blok.NAMA_BLOK:'-'}</p>
+        <p><b>Siklus:</b> ${r.siklus?r.siklus.NAMA_SIKLUS:'-'}</p>
+        <p><b>Komoditas/Varietas:</b> ${r.panen.KOMODITAS} / ${r.panen.VARIETAS||'-'}</p>
+      </div>
+      <div class="card">
+        <div class="section-title">Forward Traceability</div>
+        ${table(r.penjualan,['TANGGAL','PEMBELI','VOLUME','SATUAN','TOTAL'],null,null,null,null)}
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Aktivitas Budidaya Terkait</div>
+    ${table(r.aktivitas,['TANGGAL','TAHAPAN','AKTIVITAS','INPUT','STATUS'],null,null,null,null)}</div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Proses Pascapanen</div>
+    ${table(r.pascapanen,['TANGGAL','PROSES','BERAT_MASUK','BERAT_KELUAR','SUSUT'],null,null,null,null)}</div>`;
+  }catch(err){ showError(err); }
+}
+
+/* ============================================================
+   ALAT & MESIN (Aset + Penyusutan)
+   ============================================================ */
+let asetTab = 'aset';
+
+async function loadAset(){
+  document.getElementById('content').innerHTML = asetShell();
+  await renderAsetTab();
+}
+
+function asetShell(){
+  const tabs = [['aset','Alat & Mesin'],['penyusutan','Penyusutan']];
+  return `<div class="tabs">${tabs.map(([k,l])=>tabBtn(k,l,asetTab,'switchAsetTab')).join('')}</div>
+  <div id="subContent" class="tab-panel"><div class="empty">Memuat...</div></div>`;
+}
+
+async function switchAsetTab(tab, evt){
+  asetTab = tab;
+  document.querySelectorAll('#content .tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+  if(evt) evt.target.classList.add('active');
+  await renderAsetTab();
+}
+
+async function renderAsetTab(){
+  const el = document.getElementById('subContent');
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+
+  if(asetTab==='aset'){
+    const rows = await gsRun('getAsetData');
+    el.innerHTML = `
+    <div class="card">${formAset()}</div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Daftar Alat & Mesin</div>
+    ${table(rows,['ID_ASET','KODE_ASET','NAMA_ASET','KATEGORI','MERK','TANGGAL_PEROLEHAN','HARGA_PEROLEHAN','KONDISI_AWAL','NILAI_RESIDU','UMUR_EKONOMIS_TAHUN','STATUS'],'ASET','ID_ASET','NAMA_ASET','renderAsetTab()')}</div>`;
+  }
+
+  else if(asetTab==='penyusutan'){
+    const [rows, aset] = await Promise.all([gsRun('getPenyusutanData'), gsRun('getAsetData')]);
+    el.innerHTML = `
+    <div class="card">
+      <div class="section-title">Hitung & Catat Penyusutan Periode</div>
+      <p class="muted">Metode garis lurus: (Harga Perolehan - Nilai Residu) / Umur Ekonomis. Penyusutan bulanan masuk sebagai biaya non-kas periodik, tidak dialokasikan ke komoditas.</p>
+      <div class="form-grid">
+        ${selectField('DEP_ASET','Alat/Mesin',aset.map(a=>({value:a.ID_ASET,label:a.NAMA_ASET+' ('+a.KODE_ASET+')'})))}
+        ${field('DEP_PERIODE','Periode (YYYY-MM)','text','2026-08')}
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="viewDepreciationSchedule()">Lihat Proyeksi</button>
+        <button class="btn btn-primary" onclick="runDepreciationNow()">Catat Penyusutan Periode Ini</button>
+      </div>
+      <div id="depResult" style="margin-top:14px"></div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="section-title">Riwayat Penyusutan Tercatat</div>
+    ${table(rows,['ID_ASET','PERIODE','NILAI_PENYUSUTAN','AKUMULASI_PENYUSUTAN','NILAI_BUKU','METODE'],'PENYUSUTAN','ID_PENYUSUTAN','PERIODE','renderAsetTab()')}</div>`;
+  }
+}
+
+function formAset(){
+ return `<div class="section-title">Tambah Alat/Mesin</div>
+ <form onsubmit="submitAset(event)" class="form-grid">
+ ${hiddenId('ID_ASET')}
+ ${field('KODE_ASET','Kode Aset')}${field('NAMA_ASET','Nama Alat/Mesin')}
+ ${field('KATEGORI','Kategori','select',['Alat','Mesin','Kendaraan','Lainnya'])}
+ ${field('MERK','Merk')}${field('TIPE','Tipe/Model')}${field('NOMOR_SERI','Nomor Seri')}
+ ${field('TANGGAL_PEROLEHAN','Tanggal Perolehan','date')}
+ ${field('SUMBER_PEROLEHAN','Sumber Perolehan')}
+ ${field('HARGA_PEROLEHAN','Harga Perolehan','number')}
+ ${field('KONDISI_AWAL','Kondisi','select',['Baru','Bekas'])}
+ ${field('NILAI_RESIDU','Nilai Residu','number')}
+ ${field('UMUR_EKONOMIS_TAHUN','Umur Ekonomis (tahun)','number')}
+ ${field('STATUS','Status','select',['Aktif','Rusak','Tidak Aktif'])}
+ ${field('LOKASI','Lokasi')}
+ <div class="field"><label>Catatan</label><textarea name="CATATAN"></textarea></div>
+ ${formActions('Simpan Aset')}
+ </form>`;
+}
+
+async function submitAset(e){
+ e.preventDefault();
+ const data = extractFormData(e.target);
+ try{
+   const r = await gsRun('saveAset', data);
+   toast(r.message); e.target.reset(); renderAsetTab();
+ }catch(err){ showError(err); }
+}
+
+async function viewDepreciationSchedule(){
+  const idAset = document.querySelector('[name=DEP_ASET]').value;
+  const el = document.getElementById('depResult');
+  if(!idAset){ el.innerHTML = '<div class="empty">Pilih alat/mesin.</div>'; return; }
+  el.innerHTML = '<div class="empty">Menghitung...</div>';
+  const r = await gsRun('getDepreciationSchedule', idAset);
+  if(!r.ok){ el.innerHTML = `<div class="empty">${r.message}</div>`; return; }
+  el.innerHTML = `<p class="muted">Penyusutan tahunan ${rupiah(r.annual)} &middot; bulanan ${rupiah(r.monthly)}</p>
+  ${table(r.schedule,['PERIODE','NILAI_PENYUSUTAN','AKUMULASI_PENYUSUTAN','NILAI_BUKU'],null,null,null,null)}`;
+}
+
+async function runDepreciationNow(){
+  const idAset = document.querySelector('[name=DEP_ASET]').value;
+  const periode = document.querySelector('[name=DEP_PERIODE]').value;
+  if(!idAset || !periode){ toast('Lengkapi Alat/Mesin dan Periode.'); return; }
+  try{
+    const r = await gsRun('runDepreciation', idAset, periode);
+    toast(r.message);
+    if(r.ok) renderAsetTab();
+  }catch(err){ showError(err); }
+}
+
+/* ============================================================
+   ANALISA USAHA TANI
+   ============================================================ */
+async function loadAnalisa(){
+  document.getElementById('content').innerHTML = `<div class="card">
+  <div class="section-title">Analisa Usaha Tani Berbasis Periode</div>
+  <div class="form-grid">
+   ${field('AN_START','Tanggal Mulai','date')}
+   ${field('AN_END','Tanggal Akhir','date')}
+  </div>
+  <div class="form-actions"><button class="btn btn-primary" onclick="runAnalysis()">Analisa</button></div>
+  <div id="analysisResult" style="margin-top:18px"></div>
+  </div>`;
+}
+
+async function runAnalysis(){
+  const s=document.querySelector('[name=AN_START]').value, e=document.querySelector('[name=AN_END]').value;
+  const el = document.getElementById('analysisResult');
+  el.innerHTML = '<div class="empty">Menghitung...</div>';
+  try{
+    const [pl, commodity] = await Promise.all([gsRun('getProfitLoss', s, e), gsRun('getCommodityPerformance', s, e)]);
+    el.innerHTML = `
+     <div class="grid grid-4">
+      ${metric('Total Penerimaan',rupiah(pl.totalPenerimaan),'Kas masuk periode')}
+      ${metric('Total Biaya Kas',rupiah(pl.totalBiayaKas),'Kas keluar periode')}
+      ${metric('Penyusutan',rupiah(pl.totalPenyusutan),'Biaya non-kas periodik')}
+      ${metric('Laba/Rugi Usahatani',rupiah(pl.labaRugi),'Penerimaan - Total Biaya')}
+     </div>
+     <div class="card" style="margin-top:16px">
+      <div class="section-title">Biaya per Jenis Belanja</div>
+      ${table(Object.entries(pl.byKategori).map(([k,v])=>({KATEGORI:k,TOTAL:v})),['KATEGORI','TOTAL'],null,null,null,null)}
+     </div>
+     <div class="card" style="margin-top:16px">
+      <div class="section-title">Kinerja Penerimaan Komoditas</div>
+      <p class="muted">Disajikan terpisah dari Laba/Rugi Usahatani karena biaya tidak dialokasikan ke masing-masing komoditas.</p>
+      ${table(commodity.data,['KOMODITAS','VOLUME','HARGA_RATA_RATA','PENERIMAAN'],null,null,null,null)}
+     </div>`;
+  }catch(err){ showError(err); }
+}
+
+/* ============================================================
+   LAPORAN
+   ============================================================ */
+let laporanTab = 'budidaya';
+
+async function loadLaporan(){
+  document.getElementById('content').innerHTML = laporanShell();
+  await renderLaporanTab();
+}
+
+function laporanShell(){
+  const tabs = [['budidaya','Budidaya'],['keuangan','Keuangan'],['produksi','Produksi'],['trace','Traceability']];
+  return `<div class="tabs">${tabs.map(([k,l])=>tabBtn(k,l,laporanTab,'switchLaporanTab')).join('')}</div>
+  <div id="subContent" class="tab-panel"><div class="empty">Memuat...</div></div>`;
+}
+
+async function switchLaporanTab(tab, evt){
+  laporanTab = tab;
+  document.querySelectorAll('#content .tabs .tab-btn').forEach(b=>b.classList.remove('active'));
+  if(evt) evt.target.classList.add('active');
+  await renderLaporanTab();
+}
+
+async function renderLaporanTab(){
+  const el = document.getElementById('subContent');
+
+  if(laporanTab==='budidaya'){
+    const siklus = await gsRun('getSiklusData');
+    el.innerHTML = `<div class="card">
+      <div class="section-title">Laporan Budidaya per Siklus</div>
+      <div class="form-grid">${selectField('LAP_SIKLUS','Siklus Budidaya',siklus.map(s=>({value:s.ID_SIKLUS,label:s.NAMA_SIKLUS+' - '+s.NAMA_BLOK})))}</div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="genLaporanBudidaya()">Tampilkan</button><button class="btn btn-secondary" onclick="window.print()">Cetak</button></div>
+      <div id="laporanBudidayaResult" style="margin-top:14px"></div>
+    </div>`;
+  }
+
+  else if(laporanTab==='keuangan'){
+    el.innerHTML = `<div class="card">
+      <div class="section-title">Laporan Keuangan per Periode</div>
+      <div class="form-grid">${field('LAP_START','Tanggal Mulai','date')}${field('LAP_END','Tanggal Akhir','date')}</div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="genLaporanKeuangan()">Tampilkan</button><button class="btn btn-secondary" onclick="window.print()">Cetak</button></div>
+      <div id="laporanKeuanganResult" style="margin-top:14px"></div>
+    </div>`;
+  }
+
+  else if(laporanTab==='produksi'){
+    el.innerHTML = `<div class="card">
+      <div class="section-title">Laporan Produksi & Penjualan</div>
+      <div class="form-grid">${field('LAP_START2','Tanggal Mulai','date')}${field('LAP_END2','Tanggal Akhir','date')}</div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="genLaporanProduksi()">Tampilkan</button><button class="btn btn-secondary" onclick="window.print()">Cetak</button></div>
+      <div id="laporanProduksiResult" style="margin-top:14px"></div>
+    </div>`;
+  }
+
+  else if(laporanTab==='trace'){
+    const batch = await gsRun('getPanenData');
+    el.innerHTML = `<div class="card">
+      <div class="section-title">Laporan Traceability</div>
+      <div class="form-grid">${selectField('LAP_BATCH','Batch Panen',batch.map(b=>({value:b.ID_BATCH,label:b.ID_BATCH+' - '+b.KOMODITAS})))}</div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="runTraceFromLaporan()">Tampilkan</button><button class="btn btn-secondary" onclick="window.print()">Cetak</button></div>
+      <div id="traceResult" style="margin-top:14px"></div>
+    </div>`;
+  }
+}
+
+async function genLaporanBudidaya(){
+  const id = document.querySelector('[name=LAP_SIKLUS]').value;
+  const el = document.getElementById('laporanBudidayaResult');
+  if(!id){ el.innerHTML='<div class="empty">Pilih siklus.</div>'; return; }
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+  const r = await gsRun('getLaporanBudidaya', id);
+  if(!r.ok){ el.innerHTML = `<div class="empty">${r.message}</div>`; return; }
+  el.innerHTML = `<p><b>Siklus:</b> ${r.siklus.NAMA_SIKLUS} &middot; <b>Blok:</b> ${r.siklus.NAMA_BLOK||r.siklus.ID_BLOK}</p>
+  <div class="section-title">Unit Budidaya</div>
+  ${table(r.unit,['NAMA_KOMODITAS','NAMA_VARIETAS','LUAS','JUMLAH_TANAMAN'],null,null,null,null)}
+  <div class="section-title" style="margin-top:14px">Aktivitas</div>
+  ${table(r.aktivitas,['TANGGAL','TAHAPAN','AKTIVITAS','INPUT','STATUS'],null,null,null,null)}`;
+}
+
+async function genLaporanKeuangan(){
+  const s = document.querySelector('[name=LAP_START]').value, e = document.querySelector('[name=LAP_END]').value;
+  const el = document.getElementById('laporanKeuanganResult');
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+  const r = await gsRun('getLaporanKeuangan', s, e);
+  el.innerHTML = `<div class="grid grid-4">
+   ${metric('Kas Masuk',rupiah(r.masuk),'Periode')}
+   ${metric('Kas Keluar',rupiah(r.keluar),'Periode')}
+   ${metric('Saldo',rupiah(r.saldo),'Kas masuk - kas keluar')}
+   ${metric('Jumlah Transaksi',r.jumlahTransaksi,'Pada periode terpilih')}
+  </div>
+  <div class="section-title" style="margin-top:14px">Rincian Transaksi</div>
+  ${table(r.transaksi,['TANGGAL','JENIS','KATEGORI','ITEM','TOTAL'],null,null,null,null)}`;
+}
+
+async function genLaporanProduksi(){
+  const s = document.querySelector('[name=LAP_START2]').value, e = document.querySelector('[name=LAP_END2]').value;
+  const el = document.getElementById('laporanProduksiResult');
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+  const r = await gsRun('getLaporanProduksi', s, e);
+  el.innerHTML = `<div class="grid grid-2">
+   ${metric('Total Berat Panen',r.totalBerat,'Seluruh batch pada periode')}
+   ${metric('Total Penjualan',rupiah(r.totalPenjualan),'Seluruh penjualan pada periode')}
+  </div>
+  <div class="section-title" style="margin-top:14px">Panen</div>
+  ${table(r.panen,['ID_BATCH','TANGGAL_PANEN','KOMODITAS','BERAT_TOTAL','SATUAN'],null,null,null,null)}
+  <div class="section-title" style="margin-top:14px">Penjualan</div>
+  ${table(r.penjualan,['ID_PENJUALAN','TANGGAL','PEMBELI','KOMODITAS','VOLUME','TOTAL'],null,null,null,null)}`;
+}
+
+async function runTraceFromLaporan(){
+  const id = document.querySelector('[name=LAP_BATCH]').value;
+  document.querySelector('[name=TRACE_BATCH]')?.setAttribute('value', id);
+  const el = document.getElementById('traceResult');
+  if(!id){ el.innerHTML = '<div class="empty">Pilih batch.</div>'; return; }
+  el.innerHTML = '<div class="empty">Memuat...</div>';
+  const r = await gsRun('getLaporanTraceability', id);
+  if(!r.ok){ el.innerHTML = `<div class="empty">${r.message}</div>`; return; }
+  el.innerHTML = `
+  <p><b>Petani:</b> ${r.petani?r.petani.NAMA:'-'} &middot; <b>Lahan:</b> ${r.lahan?r.lahan.NAMA_LAHAN:'-'} &middot; <b>Blok:</b> ${r.blok?r.blok.NAMA_BLOK:'-'}</p>
+  <p><b>Komoditas:</b> ${r.panen.KOMODITAS} / ${r.panen.VARIETAS||'-'} &middot; <b>Berat:</b> ${r.panen.BERAT_TOTAL} ${r.panen.SATUAN||''}</p>
+  <div class="section-title" style="margin-top:10px">Penjualan</div>
+  ${table(r.penjualan,['TANGGAL','PEMBELI','VOLUME','TOTAL'],null,null,null,null)}`;
+}
+
+/* ============================================================
+   KOMPONEN UI (form field, select, table)
+   ============================================================ */
+function field(name,label,type='text',value='',required=false){
+ if(Array.isArray(value)) return `<div class="field"><label>${label}</label><select name="${name}" ${required?'required':''}>${value.map(x=>`<option>${x}</option>`).join('')}</select></div>`;
+ if(type==='number'){
+   return `<div class="field"><label>${label}</label><input name="${name}" type="text" inputmode="decimal" autocomplete="off" class="fmt-number" value="${value}" ${required?'required':''}></div>`;
+ }
+ return `<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${value}" ${required?'required':''}></div>`;
+}
+
+function selectField(name,label,options,required=false,placeholder='Pilih...'){
+ options = options || [];
+ return `<div class="field"><label>${label}</label><select name="${name}" ${required?'required':''}>
+   <option value="">${placeholder}</option>
+   ${options.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}
+ </select></div>`;
+}
+
+/**
+ * afterCall: potongan kode JS (string) yang dipanggil ulang setelah data dihapus,
+ * misalnya "renderMasterTab()" atau "renderSopDetailList('SOP-123')".
+ * Menggunakan string (bukan referensi fungsi) agar closure dengan parameter
+ * (mis. daftar per ID) tetap berfungsi saat dipanggil dari atribut onclick.
+ */
+function table(rows,cols,sheetName,idField,labelField,afterCall){
+ if(!rows || !rows.length) return '<div class="empty">Belum ada data.</div>';
+ const showActions = !!sheetName;
+ if(showActions) cacheRows(sheetName, rows, idField);
+ const afterFnLiteral = afterCall ? `()=>{${afterCall}}` : 'null';
+ return `<div class="table-wrap"><table><thead><tr>${cols.map(c=>`<th>${prettyCol(c)}</th>`).join('')}${showActions?'<th>Aksi</th>':''}</tr></thead><tbody>${
+ rows.map(r=>{
+   const id = r[idField];
+   const label = String(r[labelField]||'').replace(/'/g,"");
+   const actions = showActions ? `<td class="actions-cell">
+     <button class="btn-link" onclick="viewRecord('${sheetName}','${id}')">Lihat</button>
+     <button class="btn-link" onclick="editRecordAction('${sheetName}','${id}')">Edit</button>
+     <button class="btn-link" onclick="printRecordAction('${sheetName}','${id}')">Cetak</button>
+     <button class="btn-link btn-link-danger" onclick="removeRecord('${sheetName}','${id}',${afterFnLiteral},'${label}')">Hapus</button>
+   </td>` : '';
+   return `<tr>${cols.map(c=>`<td>${formatCell(r[c],c)}</td>`).join('')}${actions}</tr>`;
+ }).join('')
+ }</tbody></table></div>`;
+}
+
+function prettyCol(c){ return c.replace(/_/g,' '); }
+
+function formatCell(v,k){
+ if(v===null||v===undefined||v==='') return '-';
+ if(['TOTAL','HARGA_SATUAN','HARGA_PEROLEHAN','NILAI_RESIDU','NILAI_PENYUSUTAN','AKUMULASI_PENYUSUTAN','NILAI_BUKU','PENERIMAAN','HARGA_RATA_RATA'].includes(k)) return rupiah(v);
+ return String(v);
+}
+
+function rupiah(v){return new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',maximumFractionDigits:0}).format(Number(v||0));}
+function comingSoon(name){return `<div class="card"><div class="section-title">${name}</div><p class="muted">Modul sedang disiapkan pada tahap berikutnya.</p></div>`;}
+function toast(msg, duration){const el=document.getElementById('toast');el.textContent=msg;el.style.display='block';setTimeout(()=>el.style.display='none',duration||2500);}
+function showError(err){toast('Error: '+(err.message||err));console.error(err);}
+</script>

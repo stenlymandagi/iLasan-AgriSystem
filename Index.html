@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iLasan Agri System</title>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">iL</div>
+        <div>
+          <div class="brand-title">iLasan Agri System</div>
+          <div class="brand-subtitle">Farm Management Information System</div>
+        </div>
+      </div>
+
+      <nav>
+        <button class="nav-item active" data-page="dashboard">Dashboard</button>
+        <button class="nav-item" data-page="lahan">Data Lahan</button>
+        <button class="nav-item" data-page="sop">SOP Budidaya</button>
+        <button class="nav-item" data-page="aktivitas">Aktivitas Budidaya</button>
+        <button class="nav-item" data-page="keuangan">Catatan Biaya & Arus Kas</button>
+        <button class="nav-item" data-page="panen">Panen & Pascapanen</button>
+        <button class="nav-item" data-page="aset">Alat & Mesin</button>
+        <button class="nav-item" data-page="analisa">Analisa Usaha Tani</button>
+        <button class="nav-item" data-page="laporan">Laporan</button>
+      </nav>
+
+      <div class="sidebar-footer">v0.3.0 · Google Apps Script</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">FARM MANAGEMENT INFORMATION SYSTEM</div>
+          <h1 id="pageTitle">Dashboard</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-secondary" onclick="setupApp()">Setup Database</button>
+          <button class="btn btn-primary" onclick="refreshCurrent()">Refresh</button>
+        </div>
+      </header>
+
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <div id="detailModal" class="modal-overlay hidden" onclick="if(event.target===this) closeModal()">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div id="modalTitle" class="modal-title"></div>
+        <button class="modal-close" onclick="closeModal()" aria-label="Tutup">&times;</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="window.print()">Cetak</button>
+        <button class="btn btn-primary" onclick="closeModal()">Tutup</button>
+      </div>
+    </div>
+  </div>
+
+  <?!= include('AppJS'); ?>
+</body>
+</html>
